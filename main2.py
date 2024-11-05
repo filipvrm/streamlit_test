@@ -1,81 +1,89 @@
 import streamlit as st
-import pandas as pd
 import sqlite3
+import matplotlib.pyplot as plt
+import networkx as nx
 
-# Connect to SQLite database (or create it if it doesn't exist)
-conn = sqlite3.connect('dishes_progress.db')
+# Setup database connection
+conn = sqlite3.connect("tournament_bracket.db")
 cursor = conn.cursor()
 
-# Create the dishes table if it doesn't exist
+# Create a table to store match results if it doesn't exist
 cursor.execute('''
-    CREATE TABLE IF NOT EXISTS dishes_progress (
-        dish_id INTEGER PRIMARY KEY,
-        stage INTEGER DEFAULT 0
+    CREATE TABLE IF NOT EXISTS matchups (
+        round INTEGER,
+        match_id INTEGER,
+        team1 TEXT,
+        team2 TEXT,
+        winner TEXT
     )
 ''')
 conn.commit()
 
-# Initialize the dishes in the database if they haven't been added yet
-for dish_id in range(41):
-    cursor.execute('INSERT OR IGNORE INTO dishes_progress (dish_id, stage) VALUES (?, ?)', (dish_id, 0))
-conn.commit()
+# Function to load matchups from database
+def load_matchups():
+    cursor.execute("SELECT * FROM matchups")
+    return cursor.fetchall()
 
-# Load data from the database
-def load_dishes_progress():
-    cursor.execute('SELECT * FROM dishes_progress')
-    dishes = cursor.fetchall()
-    return {dish_id: stage for dish_id, stage in dishes}
-
-# Update dish stage in the database
-def update_dish_stage(dish_id, new_stage):
-    cursor.execute('UPDATE dishes_progress SET stage = ? WHERE dish_id = ?', (new_stage, dish_id))
+# Function to add/update a matchup result in the database
+def save_matchup(round_num, match_id, team1, team2, winner):
+    cursor.execute('''
+        INSERT OR REPLACE INTO matchups (round, match_id, team1, team2, winner)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (round_num, match_id, team1, team2, winner))
     conn.commit()
 
-# Load current dishes progress
-dishes_progress = load_dishes_progress()
+# UI for entering matchups and selecting the winner
+st.title("Dynamic Tournament Bracket")
 
-# Title
-st.title("TaggadThaiTorsdag - Taste Test Tournament")
+# Get round and match information
+round_num = st.number_input("Round Number", min_value=1, max_value=4, step=1)
+match_id = st.number_input("Match ID", min_value=1)
+team1 = st.text_input("Team 1")
+team2 = st.text_input("Team 2")
+winner = st.radio("Select the Winner", [team1, team2])
 
-# Instructions
-st.write("Select two dishes to taste test. Pick one as the 'Winner' and one as the 'Loser'.")
+# Confirm button to save results
+if st.button("Confirm Result"):
+    save_matchup(round_num, match_id, team1, team2, winner)
+    st.success(f"Match result saved: {winner} wins between {team1} and {team2}")
 
-# Dish Selection
-dish_options = list(dishes_progress.keys())
-dish1 = st.selectbox("Choose Dish 1", dish_options, key="dish1")
-dish2 = st.selectbox("Choose Dish 2", dish_options, key="dish2")
+# Load matchups and display them in a bracket-like structure
+matchups = load_matchups()
 
-# Ensure two different dishes are selected
-if dish1 == dish2:
-    st.warning("Please select two different dishes.")
-else:
-    # Winner and Loser selection
-    winner = st.radio("Select the Winner", [dish1, dish2], key="winner")
-    loser = dish1 if winner == dish2 else dish2
+# Function to plot the tournament bracket
+def plot_bracket(matchups):
+    G = nx.DiGraph()
+    positions = {}
+    labels = {}
 
-    # Confirm button
-    if st.button("Confirm"):
-        # Advance the winner's position by 1
-        new_stage = dishes_progress[winner] + 1
-        update_dish_stage(winner, new_stage)
-        st.success(f"Dish {winner} advances! Current stage: {new_stage}")
+    # Set positions for rounds
+    round_positions = {1: -1, 2: 0, 3: 1, 4: 2}
+
+    # Populate graph with nodes and edges based on matchups
+    for match in matchups:
+        round_num, match_id, team1, team2, winner = match
+        G.add_node(team1, pos=(round_positions[round_num], -match_id))
+        G.add_node(team2, pos=(round_positions[round_num], -match_id - 0.5))
         
-        # Reload updated progress
-        dishes_progress = load_dishes_progress()
+        # Add edges based on winners
+        if winner:
+            G.add_edge(team1, winner)
+            G.add_edge(team2, winner)
+        
+        # Update labels
+        labels[team1] = team1
+        labels[team2] = team2
 
-# Display Progression Table
-progress_data = pd.DataFrame(list(dishes_progress.items()), columns=["Dish", "Stage"])
-progress_data = progress_data.sort_values(by="Stage", ascending=False).reset_index(drop=True)
+    # Get positions for the graph layout
+    pos = nx.get_node_attributes(G, 'pos')
+    fig, ax = plt.subplots(figsize=(10, 6))
+    nx.draw(G, pos, labels=labels, with_labels=True, node_size=500, node_color="skyblue", font_size=8, font_weight="bold", ax=ax)
+    ax.set_title("Tournament Bracket")
 
-# Progression Table
-st.write("### Dish Progression Table")
-st.write("The dish that tasted the best will end up on the far right as the tournament progresses.")
-st.table(progress_data)
+    st.pyplot(fig)
 
-# Arrow-Like Progress Visualization
-st.write("### Progress Visualization")
-for dish, stage in sorted(dishes_progress.items(), key=lambda x: x[1], reverse=True):
-    st.write("Dish {}: ".format(dish) + "→ " * stage)
+# Plot bracket
+plot_bracket(matchups)
 
-# Close database connection when done
+# Close database connection
 conn.close()
