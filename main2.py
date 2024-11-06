@@ -1,89 +1,166 @@
 import streamlit as st
 import sqlite3
-import matplotlib.pyplot as plt
-import networkx as nx
+import pandas as pd
+from datetime import datetime
 
-# Setup database connection
+# Database setup
 conn = sqlite3.connect("tournament_bracket.db")
 cursor = conn.cursor()
 
-# Create a table to store match results if it doesn't exist
+# Create the matchups table if it doesn't exist, with an added timestamp column
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS matchups (
         round INTEGER,
-        match_id INTEGER,
-        team1 TEXT,
-        team2 TEXT,
-        winner TEXT
+        winner INTEGER,
+        loser INTEGER,
+        timestamp TEXT
     )
 ''')
 conn.commit()
 
-# Function to load matchups from database
+# Function to add a matchup to the database, with current timestamp
+def add_matchup(round_num, winner, loser):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Get current date and time
+    try:
+        cursor.execute("INSERT INTO matchups (round, winner, loser, timestamp) VALUES (?, ?, ?, ?)", (round_num, winner, loser, timestamp))
+        conn.commit()
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+
+# Function to load matchups from the database
 def load_matchups():
-    cursor.execute("SELECT * FROM matchups")
+    cursor.execute("SELECT round, winner, loser, timestamp FROM matchups ORDER BY round")
     return cursor.fetchall()
 
-# Function to add/update a matchup result in the database
-def save_matchup(round_num, match_id, team1, team2, winner):
-    cursor.execute('''
-        INSERT OR REPLACE INTO matchups (round, match_id, team1, team2, winner)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (round_num, match_id, team1, team2, winner))
+# Function to remove the last entry from the matchups table
+def remove_last_matchup():
+    cursor.execute("DELETE FROM matchups WHERE timestamp = (SELECT MAX(timestamp) FROM matchups)")
     conn.commit()
 
-# UI for entering matchups and selecting the winner
-st.title("Dynamic Tournament Bracket")
+# Function to get the status of each dish (winner, loser, or neutral)
+def get_dish_status():
+    cursor.execute("SELECT winner, loser FROM matchups")
+    matchups = cursor.fetchall()
+    
+    dish_status = {i: "neutral" for i in range(1, 32)}  # Initialize all dishes as neutral
+    
+    for winner, loser in matchups:
+        dish_status[loser] = "loser"
+        dish_status[winner] = "winner"  # If a dish wins later, it overrides "loser" status
+    
+    return dish_status
 
-# Get round and match information
-round_num = st.number_input("Round Number", min_value=1, max_value=4, step=1)
-match_id = st.number_input("Match ID", min_value=1)
-team1 = st.text_input("Team 1")
-team2 = st.text_input("Team 2")
-winner = st.radio("Select the Winner", [team1, team2])
-
-# Confirm button to save results
-if st.button("Confirm Result"):
-    save_matchup(round_num, match_id, team1, team2, winner)
-    st.success(f"Match result saved: {winner} wins between {team1} and {team2}")
-
-# Load matchups and display them in a bracket-like structure
-matchups = load_matchups()
-
-# Function to plot the tournament bracket
-def plot_bracket(matchups):
-    G = nx.DiGraph()
-    positions = {}
-    labels = {}
-
-    # Set positions for rounds
-    round_positions = {1: -1, 2: 0, 3: 1, 4: 2}
-
-    # Populate graph with nodes and edges based on matchups
-    for match in matchups:
-        round_num, match_id, team1, team2, winner = match
-        G.add_node(team1, pos=(round_positions[round_num], -match_id))
-        G.add_node(team2, pos=(round_positions[round_num], -match_id - 0.5))
+# Function to display dish status at the top
+def display_dish_status(dish_status_container):
+    dish_status = get_dish_status()  # Load the latest status
+    with dish_status_container:
+        st.write("### Dish Status")
         
-        # Add edges based on winners
-        if winner:
-            G.add_edge(team1, winner)
-            G.add_edge(team2, winner)
+        cols = st.columns(10)  # Create 10 columns for better spacing
         
-        # Update labels
-        labels[team1] = team1
-        labels[team2] = team2
+        for i in range(1, 32):
+            status = dish_status[i]
+            color = "green" if status == "winner" else "red" if status == "loser" else "white"
+            cols[(i - 1) % 10].markdown(f"<span style='color:{color}; font-size:20px;'>{i}</span>", unsafe_allow_html=True)
 
-    # Get positions for the graph layout
-    pos = nx.get_node_attributes(G, 'pos')
-    fig, ax = plt.subplots(figsize=(10, 6))
-    nx.draw(G, pos, labels=labels, with_labels=True, node_size=500, node_color="skyblue", font_size=8, font_weight="bold", ax=ax)
-    ax.set_title("Tournament Bracket")
+# Function to create the matchups table display
+def create_table():
+    matchups = load_matchups()
+    
+    if not matchups:
+        st.write("No matchups available yet.")
+        return
+    
+    # Determine the number of rounds by finding the max round number
+    rounds = max(match[0] for match in matchups) + 1
+    
+    # Initialize a dictionary to store table data
+    table_data = {f"Round {i+1}": [] for i in range(rounds)}
+    
+    # Create the rounds and add matchups
+    for r in range(rounds):
+        round_matchups = [m for m in matchups if m[0] == r]
+        
+        if r != 1:  # First round (Winner and Loser)
+            for i in range(2**(r)-1):
+                table_data[f"Round {r+1}"].append("")  # Blank row
+        
+        # For each round, make sure the number of entries is consistent
+        for match in round_matchups:
+            if r == 1:  # First round (Winner and Loser)
+                table_data[f"Round {r}"].append(match[1])  # Winner
+                table_data[f"Round {r}"].append("")  # Blank row
+                table_data[f"Round {r}"].append(match[2])  # Loser
+                table_data[f"Round {r}"].append("")  # Blank row
 
-    st.pyplot(fig)
+                table_data[f"Round {r+1}"].append("")  # Blank row
+                table_data[f"Round {r+1}"].append(match[1])  # winner
+                table_data[f"Round {r+1}"].append("")  # Blank row
+                table_data[f"Round {r+1}"].append("")  # Blank row
 
-# Plot bracket
-plot_bracket(matchups)
+            else:  # For subsequent rounds, show only the winner
+                table_data[f"Round {r+1}"].append(match[1])  # Winner
 
-# Close database connection
+                for i in range(2**(r+1)-1):
+                    table_data[f"Round {r+1}"].append("")  # Blank row
+    
+    # Ensure all columns are of the same length by padding with empty strings
+    max_length = max(len(col) for col in table_data.values())
+    for round_col in table_data:
+        while len(table_data[round_col]) < max_length:
+            table_data[round_col].append("")  # Append empty strings to pad shorter columns
+    
+    # Convert to DataFrame for display
+    df = pd.DataFrame(table_data)
+    st.table(df)
+
+# Streamlit input for winner, loser, and round
+st.title("TTT Turnering")
+
+# Display welcome text at the beginning
+st.markdown("### Välkommen till TTTs (TaggadThaiTorsdag) officiella hemsida.")
+
+# Display additional text with clickable phone number
+st.markdown("##### För att beställa, ring [073-537 83 52](tel:+46735378352).")
+
+
+# Create a placeholder for dish status
+st.markdown("### Maträtter med status")
+dish_status_container = st.empty()
+display_dish_status(dish_status_container)  # Initial display of dish status
+
+
+st.markdown("### Ange dagens resultat")
+# Input form for entering match results
+with st.form("input_form"):
+    round_num = st.number_input("Enter the Round (1+):", min_value=1, max_value=31, step=1)
+    
+    # Dropdowns for winner and loser
+    dish_options = list(range(1, 32))
+    winner = st.selectbox("Select the Winner", options=dish_options)
+    loser = st.selectbox("Select the Loser", options=dish_options)
+    
+    submitted = st.form_submit_button("Add Result")
+    
+    if submitted:
+        if winner != loser:
+            add_matchup(round_num, winner, loser)
+            st.success(f"Match result added: Winner = {winner}, Loser = {loser}, Round = {round_num}")
+            # Update dish status display after adding a result
+            display_dish_status(dish_status_container)  # Refresh only the placeholder
+        else:
+            st.error("Winner and Loser cannot be the same.")
+
+# Button to remove the last entry
+if st.button("Remove Last Entry"):
+    remove_last_matchup()
+    st.success("Last entry removed.")
+    # Update views
+    display_dish_status(dish_status_container)  # Refresh the dish status display
+
+# Create and display the table with match results
+st.markdown("### Maträtters turneringsresultat")
+create_table()
+
+# Close database connection when done
 conn.close()
